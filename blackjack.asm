@@ -1,7 +1,7 @@
 ; -----------------------------------------------------------------------------
 ; Author:   Edward Gilmour
 ; Date:     July 2018
-; Version:  0.92 (beta)
+; Version:  0.94 (beta)
 ; Game:     Black Jack Theta VIII for the Atari 2600
 ;
 ; 4 banks (4 KB each):
@@ -51,43 +51,11 @@ NO_ILLEGAL_OPCODES          = 1
 POSITION_OBJECT_VERS        = 1
 BANKSWITCH_VERS             = 1
 
-PIP_COLORS                  = 0
-
-; TEST_RAND_ON:
-;   0 = off
-;   1 = non-random numbers
-;   2 = random cards
-TEST_RAND_ON                = 0
-TEST_TIME_ON                = 0
-TEST_TIMING_ON              = 0
-TEST_STACK_DEBUG            = 0
-
-FILLER_CHAR                 = $4f ; $ea
-BALLAST_ON                  = 0
-
-    IFCONST AFP_TARGET
-        IF AFP_TARGET != 0
-BALLAST_ON                  = 1
-        ELSE
-BALLAST_ON                  = 0
-        ENDIF
-    ENDIF
-
-    LIST OFF
-    include "include/bankswitch.h"
-    include "include/debug.h"
-    include "include/defines.h"
-    include "include/draw.h"
-    include "include/macro.h"
-    include "include/menu.h"
-    include "include/position.h"
-    include "include/screen.h"
-    include "include/time.h"
-    include "include/util.h"
-    include "include/vcs.h"
     include "sys/video.h"
-    include "lib/macros.asm"
-    LIST ON
+    include "atarilib.h"
+    include "include/defines.h"
+    include "include/menu.h"
+    include "include/screen.h"
 
 ; -----------------------------------------------------------------------------
 ; Constants
@@ -110,6 +78,28 @@ BANK1_HOTSPOT               = BANK0_HOTSPOT+1
 BANK2_HOTSPOT               = BANK0_HOTSPOT+2
 BANK3_HOTSPOT               = BANK0_HOTSPOT+3
 
+PIP_COLORS                  = 0
+
+; TEST_RAND_ON:
+;   0 = off
+;   1 = non-random numbers
+;   2 = random cards
+TEST_RAND_ON                = 1
+TEST_TIME_ON                = 0
+TEST_TIMING_ON              = 0
+TEST_STACK_DEBUG            = 0
+
+FILLER_CHAR                 = $4f ; $ea
+BALLAST_ON                  = 0
+
+    IFCONST AFP_TARGET
+        IF AFP_TARGET != 0
+BALLAST_ON                  = 1
+        ELSE
+BALLAST_ON                  = 0
+        ENDIF
+    ENDIF
+
 ; offscreen timings
 TIME_VBLANK                 = 37*76/64  ; TIM64T (43.9375)
 TIME_VBLANK_TITLE           = 37*76/64  ; TIM64T (43.9375)
@@ -121,28 +111,20 @@ TIME_DISPLAY_OPT            = 4*76/8    ; TIM8T (38)
 TIME_DASH_SETUP             = 2*76/8    ; TIM8T (19)
 TIME_DASH_DRAW              = 8*76/8    ; TIM8T (76)
 TIME_CHIPS_POT              = 3*76/8    ; TIM8T (28.5)
-TIME_CARD_SETUP             = 72        ; TIM8T
+TIME_CARD_SETUP             = 72        ; TIM8T (72)
 TIME_CARD_HOLE_SETUP        = 2*76/8    ; TIM8T (19)
 TIME_CARD_FLIP_SETUP        = 3*76/8    ; TIM8T (19)
 TIME_CHIP_MENU_SETUP        = 2*76/8    ; TIM8T (19)
 TIME_CHIP_DENOM             = 6*76/8    ; TIM8T (57)
 TIME_STATUS_BAR             = 4*76/8    ; TIM8T (38)
 
-JOY_TIMER_DELAY             = 30        ; num frames
-KEY_TIMER_DELAY             = 10        ; num frames
+INPUT_DELAY                 = 30        ; num frames
 
 NUSIZE_3_MEDIUM             = %00000110
 NUSIZE_3_CLOSE              = %00000011
 
 ; Dimensions
 SPRITE_WIDTH                = 8
-
-; Objects
-P0_OBJ                      = 0
-P1_OBJ                      = 1
-M0_OBJ                      = 2
-M1_OBJ                      = 3
-BL_OBJ                      = 4
 
 ; Game sections
 MSG_ROW_HEIGHT              = 23
@@ -210,8 +192,8 @@ DASH_START_SELECTION        = DASH_HIT_IDX
 
 NUM_PLAYERS                 = 2
 NUM_HANDS                   = 3
-NUM_CHIP_BYTES              = 3
-NUM_BET_BYTES               = 2
+
+NEW_PLAYER_CHIPS            = $1000     ; BCD value
 
 ; Player hand selector
 PLAYER1_IDX                 = 0         ; player's 1st hand
@@ -221,9 +203,6 @@ DEALER_IDX                  = 2
 PLAYER1_CARDS_OFFSET        = NUM_VISIBLE_CARDS * PLAYER1_IDX
 PLAYER2_CARDS_OFFSET        = NUM_VISIBLE_CARDS * PLAYER2_IDX
 DEALER_CARDS_OFFSET         = NUM_VISIBLE_CARDS * DEALER_IDX
-PLAYER1_CHIPS_OFFSET        = NUM_CHIP_BYTES * PLAYER1_IDX
-
-NEW_PLAYER_CHIPS            = $1000     ; BCD value
 
 ; Variables
 ; -----------------------------------------------------------------------------
@@ -231,9 +210,9 @@ NEW_PLAYER_CHIPS            = $1000     ; BCD value
     ORG $80
 
 ; Variables global to the all banks
-; -----------------------------------------------------------------------------
 GlobalVars
 
+      
 ; Game state selects which handler is executed on the current frame.
 GS_TITLE_SCREEN             = 0
 GS_NEW_GAME                 = 1
@@ -268,7 +247,9 @@ GS_DEALER_POST_HIT          = 29    ;
 GS_DEALER_HAND_OVER         = 30    ; ----
 GS_GAME_OVER                = 31
 GS_INTERMISSION             = 32
-GS_MAX                      = GS_INTERMISSION
+GS_BROKE_BANK1              = 33
+GS_BROKE_BANK2              = 34
+GS_MAX                      = GS_BROKE_BANK2
 GS_START_STATE              = GS_TITLE_SCREEN
 GameState                   ds.b 1
 
@@ -285,8 +266,7 @@ GS_PROMPT_IDX_MASK          = %00000111
 FrameCtr                    ds.b 1
 RandNum                     ds.b 1
 RandAlt                     ds.b 1
-JoyTimer                    ds.b 1
-KeyTimer                    ds.b 1
+InputTimer                  ds.b 1
 
 ; 1 = release event; 0 = no event
 ; Bit 7:    right
@@ -304,8 +284,10 @@ KeyPress                    ds.b 1
 ; Previous values of of SWCHA and INPT4
 JoySWCHA                    ds.b 1
 JoySWCHB                    ds.b 1
-; TODO: store bit 7 of JoyINPT4 in JoySWCHB to save a byte
 JoyINPT4                    ds.b 1
+
+JOY_FIRE_BIT                = %00000100
+
 
 ; Sound effect ID for the sound effect queue
 SOUND_ID_NONE               = 0
@@ -364,7 +346,8 @@ TaskArg                     ds.b 2
 ARG_POPUP_OPEN              = POPUP_HEIGHT
 
 ; Current bet amount: BCD (big endian): [MSB, LSB]
-CurrBet                     ds.b 2
+CurrBet1                    ds.b 3
+CurrBet                     = CurrBet1+1
 ; Currently selected player
 CurrPlayer                  ds.b 1
 
@@ -379,7 +362,7 @@ NUM_DECKS_MASK              = #%00000011
 GameOpts                    ds.b 1
 
 ; 3 BCD bytes per player (big endian)
-PlayerChips                 ds.b NUM_CHIP_BYTES;  NUM_PLAYERS*NUM_CHIP_BYTES
+PlayerChips                 ds.b 3
 
 ; Bitmap various state values
 ; Bit 7:    show hole card face up or down (1 = face down, 0 = face up)
@@ -480,14 +463,17 @@ PlayerPileScore             ds.b NUM_HANDS      ; score of off screen cards
 ; Rendering variables
 SpritePtrs                  ds.w NUM_VISIBLE_CARDS
 TempPtr                     ds.w 1
+TempPtr2
 Arg1                        ds.b 1
 Arg2                        ds.b 1
 
 ; Variables temporary to subroutines
 ; -----------------------------------------------------------------------------
 TempVars
+    ECHO "TempVars = ", TempVars
 
 MemBlockEnd
+    ECHO "MemBlockEnd = ", MemBlockEnd
 
     RAM_BYTES_USAGE
 
@@ -495,7 +481,14 @@ MemBlockEnd
 ScanDebug                   SET PlayerCards+#5
 
     SEG rom
+PAGE_CURR_BANK SET 0
     include "bank0/bank0.asm"
+
+PAGE_CURR_BANK SET 1
     include "bank1/bank1.asm"
+
+PAGE_CURR_BANK SET 2
     include "bank2/bank2.asm"
+
+PAGE_CURR_BANK SET 3
     include "bank3/bank3.asm"
